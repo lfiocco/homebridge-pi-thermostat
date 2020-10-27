@@ -1,16 +1,12 @@
-const gpio = process.platform === 'linux' ? require('rpi-gpio') : {
-  setMode: () => {},
-  setup: () => {},
-  write: () => {}
-};
-const dhtSensor = process.platform === 'linux' ? require('node-dht-sensor') : {
-  read: (type, pin, fn) => { fn(null, 22, 50); }
-};
-gpio.setMode(gpio.MODE_BCM);
+const gpio = require('rpi-gpio');
+const sensor = require('ds18b20-raspi');
 
 let Service, Characteristic, HeatingCoolingStateToRelayPin;
 const OFF = true;
 const ON = false;
+// ds18b20 sensor info
+const deviceId = '28-0000072dxxxx';
+const temp = sensor.readC(deviceId, 2);
 
 module.exports = function(homebridge) {
   Service = homebridge.hap.Service;
@@ -23,16 +19,15 @@ class Thermostat {
     this.log = log;
     this.name = config.name;
     this.maxTemperature = config.maxTemperature || 35;
-    this.minTemperature = config.minTemperature || 0;
-    this.fanRelayPin = config.fanRelayPin || 26;
-    this.heatRelayPin = config.heatRelayPin || 21;
-    this.coolRelayPin = config.coolRelayPin || 20;
-    this.dhtSensorType = config.dhtSensorType || 22;
+    this.minTemperature = config.minTemperature || 15;
+    this.fanRelayPin = config.fanRelayPin || 23;
+    this.heatRelayPin = config.heatRelayPin || 38;
+    this.coolRelayPin = config.coolRelayPin || 26;
     this.temperatureSensorPin = config.temperatureSensorPin || 4;
     this.minimumOnOffTime = config.minimumOnOffTime || 120000; // In milliseconds
-    this.blowerTurnOffTime = config.blowerTurnOffTime || 80000; // In milliseconds
+    this.blowerTurnOffTime = config.blowerTurnOffTime || 1000; // In milliseconds
     this.startDelay = config.startDelay || 10000; // In milliseconds
-    this.temperatureCheckInterval = config.temperatureCheckInterval || 10000; // In milliseconds
+    this.temperatureCheckInterval = config.temperatureCheckInterval || 60000; // In milliseconds
 
     HeatingCoolingStateToRelayPin = {
       [Characteristic.CurrentHeatingCoolingState.HEAT]: this.heatRelayPin,
@@ -44,12 +39,10 @@ class Thermostat {
     gpio.setup(this.coolRelayPin, gpio.DIR_HIGH);
 
     this.currentTemperature = 21;
-    this.currentRelativeHumidity = 50;
     this.targetTemperature = 21;
 
     this.heatingThresholdTemperature = 18;
     this.coolingThresholdTemperature = 24;
-    this.isFanRunning = false;
 
     //Characteristic.TemperatureDisplayUnits.CELSIUS = 0;
     //Characteristic.TemperatureDisplayUnits.FAHRENHEIT = 1;
@@ -68,10 +61,9 @@ class Thermostat {
     //Characteristic.TargetHeatingCoolingState.AUTO = 3;
     this.targetHeatingCoolingState = Characteristic.TargetHeatingCoolingState.OFF;
 
-    this.thermostatService = new Service.Thermostat(this.name);
-    this.fanService = new Service.Fan(`${this.name} Fan`);
+    this.service = new Service.Thermostat(this.name);
 
-    setInterval(() => this.readTemperatureFromSensor(), this.temperatureCheckInterval);
+    this.readTemperatureFromSensor();
   }
 
   get currentlyRunning() {
@@ -116,7 +108,7 @@ class Thermostat {
         this.startSystemTimer = setTimeout(() => {
           this.log(`START ${this.systemStateName(systemToTurnOn)}`);
           gpio.write(HeatingCoolingStateToRelayPin[systemToTurnOn], ON);
-          this.thermostatService.setCharacteristic(Characteristic.CurrentHeatingCoolingState, systemToTurnOn);
+          this.service.setCharacteristic(Characteristic.CurrentHeatingCoolingState, systemToTurnOn);
         }, this.startDelay);
       } else {
         this.log(`STARTING ${this.systemStateName(systemToTurnOn)} soon...`);
@@ -124,12 +116,6 @@ class Thermostat {
     } else if (this.currentHeatingCoolingState !== systemToTurnOn) {
       this.turnOffSystem();
     }
-  }
-
-  turnFan(state) {
-    this.isFanRunning = state === ON;
-    this.log(`Turning Fan ${this.isFanRunning ? 'ON' : 'OFF'}`);
-    gpio.write(this.fanRelayPin, state);
   }
 
   get timeSinceLastHeatingCoolingStateChange() {
@@ -141,7 +127,7 @@ class Thermostat {
       this.log(`STOP ${this.currentlyRunning} | Blower will turn off in ${this.blowerTurnOffTime / 1000} second(s)`);
       gpio.write(HeatingCoolingStateToRelayPin[this.currentHeatingCoolingState], OFF);
       this.stopSystemTimer = setTimeout(() => {
-        this.thermostatService.setCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
+        this.service.setCharacteristic(Characteristic.CurrentHeatingCoolingState, Characteristic.CurrentHeatingCoolingState.OFF);
       }, this.blowerTurnOffTime);
     } else {
       this.log(`INFO ${this.currentlyRunning} is stopped. Blower will turn off soon...`);
@@ -182,16 +168,15 @@ class Thermostat {
   }
 
   readTemperatureFromSensor() {
-    dhtSensor.read(this.dhtSensorType, this.temperatureSensorPin, (err, temperature, humidity) => {
+    sensor.readC(deviceId, (err, temperature) => {
       if (!err) {
         this.currentTemperature = temperature;
-        this.currentRelativeHumidity = humidity;
-        this.thermostatService.setCharacteristic(Characteristic.CurrentTemperature, this.currentTemperature);
-        this.thermostatService.setCharacteristic(Characteristic.CurrentRelativeHumidity, this.currentRelativeHumidity);
+        this.service.setCharacteristic(Characteristic.CurrentTemperature, this.currentTemperature);
       } else {
         this.log('ERROR Getting temperature');
       }
     });
+    setTimeout(this.readTemperatureFromSensor.bind(this), this.temperatureCheckInterval);
   }
 
   getServices() {
@@ -203,7 +188,7 @@ class Thermostat {
       .setCharacteristic(Characteristic.SerialNumber, 'Raspberry Pi 3');
 
     // Off, Heat, Cool
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.CurrentHeatingCoolingState)
       .on('get', callback => {
         this.log('CurrentHeatingCoolingState:', this.currentHeatingCoolingState);
@@ -222,7 +207,7 @@ class Thermostat {
       });
 
     // Off, Heat, Cool, Auto
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.TargetHeatingCoolingState)
       .on('get', callback => {
         this.log('TargetHeatingCoolingState:', this.targetHeatingCoolingState);
@@ -236,12 +221,12 @@ class Thermostat {
       });
 
     // Current Temperature
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.CurrentTemperature)
       .setProps({
         minValue: this.minTemperature,
         maxValue: this.maxTemperature,
-        minStep: 0.1
+        minStep: 0.5
       })
       .on('get', callback => {
         this.log('CurrentTemperature:', this.currentTemperature);
@@ -253,12 +238,12 @@ class Thermostat {
       });
 
     // Target Temperature
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.TargetTemperature)
       .setProps({
         minValue: this.minTemperature,
         maxValue: this.maxTemperature,
-        minStep: 0.1
+        minStep: 0.5
       })
       .on('get', callback => {
         this.log('TargetTemperature:', this.targetTemperature);
@@ -271,8 +256,8 @@ class Thermostat {
         callback(null);
       });
 
-    // °C or °F for units
-    this.thermostatService
+    // Â°C or Â°F for units
+    this.service
       .getCharacteristic(Characteristic.TemperatureDisplayUnits)
       .on('get', callback => {
         this.log('TemperatureDisplayUnits:', this.temperatureDisplayUnits);
@@ -284,22 +269,9 @@ class Thermostat {
         callback(null);
       });
 
-    // Get Humidity
-    this.thermostatService
-      .getCharacteristic(Characteristic.CurrentRelativeHumidity)
-      .on('get', callback => {
-        this.log('CurrentRelativeHumidity:', this.currentRelativeHumidity);
-        callback(null, this.currentRelativeHumidity);
-      });
-
     // Auto max temperature
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.CoolingThresholdTemperature)
-      .setProps({
-        minValue: this.minTemperature,
-        maxValue: this.maxTemperature,
-        minStep: 0.1
-      })
       .on('get', callback => {
         this.log('CoolingThresholdTemperature:', this.coolingThresholdTemperature);
         callback(null, this.coolingThresholdTemperature);
@@ -311,13 +283,8 @@ class Thermostat {
       });
 
     // Auto min temperature
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.HeatingThresholdTemperature)
-      .setProps({
-        minValue: this.minTemperature,
-        maxValue: this.maxTemperature,
-        minStep: 0.1
-      })
       .on('get', callback => {
         this.log('HeatingThresholdTemperature:', this.heatingThresholdTemperature);
         callback(null, this.heatingThresholdTemperature);
@@ -328,29 +295,12 @@ class Thermostat {
         callback(null);
       });
 
-    this.thermostatService
+    this.service
       .getCharacteristic(Characteristic.Name)
       .on('get', callback => {
         callback(null, this.name);
       });
 
-    this.fanService.getCharacteristic(Characteristic.On)
-      .on('get', callback => {
-        callback(null, this.isFanRunning);
-      })
-      .on('set', (value, callback) => {
-        if (this.currentlyRunning === 'Off') {
-          if (value && !this.isFanRunning) {
-            this.turnFan(ON);
-          } else if (!value && this.isFanRunning) {
-            this.turnFan(OFF);
-          }
-          callback(null);
-        } else {
-          callback(new Error('Heating/Cooling System is running so cannot turn on/off the fan'));
-        }
-      });
-
-    return [informationService, this.thermostatService, this.fanService];
+    return [informationService, this.service];
   }
 }

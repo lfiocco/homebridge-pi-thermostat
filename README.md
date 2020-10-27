@@ -1,6 +1,6 @@
 # Homebridge Pi Thermostat Plugin for DS18B20 1-Wire Sensor
 
-This is a [homebridge](https://github.com/nfarina/homebridge) plugin to make a Raspberry Pi connected with a Relay Board and DHT22 Temperature and Humidity Sensor into a smart thermostat that can be controlled via the Home app on iOS using Homekit.
+This is a [homebridge](https://github.com/nfarina/homebridge) plugin to make a Raspberry Pi connected with a Relay Board and DS12B20 Temperature Sensor into a smart thermostat that can be controlled via the Home app on iOS using Homekit.
 
 ![Raspberry Pi Thermostat showing Wiring](https://user-images.githubusercontent.com/498669/34429545-9cbd215a-ec27-11e7-8065-ccb0f43baa75.JPG)
 
